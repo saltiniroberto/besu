@@ -61,6 +61,7 @@ import org.hyperledger.besu.plugin.services.securitymodule.SecurityModuleExcepti
 import org.hyperledger.besu.util.Subscribers;
 
 import java.math.BigInteger;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
@@ -98,7 +99,9 @@ public class QbftRoundTest {
   @Captor private ArgumentCaptor<Block> blockCaptor;
 
   private Block proposedBlock;
+  private Block proposedBlock2;
   private BftExtraData proposedExtraData;
+  private BftExtraData proposedExtraData2;
 
   private final SECPSignature remoteCommitSeal =
       SignatureAlgorithmFactory.getInstance()
@@ -117,14 +120,31 @@ public class QbftRoundTest {
     when(messageValidator.validatePrepare(any())).thenReturn(true);
     when(messageValidator.validateCommit(any())).thenReturn(true);
 
+    final Bytes vanityData = Bytes.wrap(new byte[32]);
+
+    byte[] bytesForVanityData2 = new byte[32];
+    Arrays.fill(bytesForVanityData2, (byte)1);
+    final Bytes vanityData2 = Bytes.wrap(bytesForVanityData2);
+
     proposedExtraData =
-        new BftExtraData(Bytes.wrap(new byte[32]), emptyList(), empty(), 0, emptyList());
+        new BftExtraData(vanityData, emptyList(), empty(), 0, emptyList());
+
+    proposedExtraData2 =
+            new BftExtraData(vanityData2, emptyList(), empty(), 0, emptyList());
+
     final BlockHeaderTestFixture headerTestFixture = new BlockHeaderTestFixture();
     headerTestFixture.extraData(new QbftExtraDataCodec().encode(proposedExtraData));
     headerTestFixture.number(1);
 
     final BlockHeader header = headerTestFixture.buildHeader();
     proposedBlock = new Block(header, new BlockBody(emptyList(), emptyList()));
+
+    final BlockHeaderTestFixture headerTestFixture2 = new BlockHeaderTestFixture();
+    headerTestFixture2.extraData(new QbftExtraDataCodec().encode(proposedExtraData2));
+    headerTestFixture2.number(1);
+
+    final BlockHeader header2 = headerTestFixture2.buildHeader();
+    proposedBlock2 = new Block(header2, new BlockBody(emptyList(), emptyList()));
 
     when(blockCreator.createBlock(anyLong())).thenReturn(proposedBlock);
 
@@ -256,6 +276,48 @@ public class QbftRoundTest {
     round.handleCommitMessage(
         messageFactory.createCommit(roundIdentifier, proposedBlock.getHash(), remoteCommitSeal));
     verify(blockImporter, times(1)).importBlock(any(), any(), any());
+  }
+
+  @Test
+  public void theCommitMessageSentMatchesTheQuorumOfPrepareMessagesNotNecessarilyTheProposalMessage() {
+    final RoundState roundState = new RoundState(roundIdentifier, 2, messageValidator);
+    final QbftRound round =
+            new QbftRound(
+                    roundState,
+                    blockCreator,
+                    protocolContext,
+                    blockImporter,
+                    subscribers,
+                    nodeKey,
+                    messageFactory,
+                    transmitter,
+                    roundTimer,
+                    bftExtraDataCodec);
+
+    round.handlePrepareMessage(
+            messageFactory.createPrepare(roundIdentifier, proposedBlock.getHash()));
+
+    round.handlePrepareMessage(
+            messageFactory2.createPrepare(roundIdentifier, proposedBlock.getHash()));
+
+    round.handleProposalMessage(
+            messageFactory.createProposal(
+                    roundIdentifier, proposedBlock2, Collections.emptyList(), Collections.emptyList()));
+
+    final Hash commitSealHash =
+            new BftBlockHashing(new QbftExtraDataCodec())
+                    .calculateDataHashForCommittedSeal(proposedBlock.getHeader(), proposedExtraData);
+    final SECPSignature localCommitSeal = nodeKey.sign(commitSealHash);
+    verify(transmitter, times(1))
+            .multicastCommit(roundIdentifier, proposedBlock.getHash(), localCommitSeal);
+
+//    final Hash commitSealHash2 =
+//            new BftBlockHashing(new QbftExtraDataCodec())
+//                    .calculateDataHashForCommittedSeal(proposedBlock2.getHeader(), proposedExtraData2);
+//    final SECPSignature localCommitSeal2 = nodeKey.sign(commitSealHash2);
+//
+//    verify(transmitter, times(1))
+//            .multicastCommit(roundIdentifier, proposedBlock2.getHash(), localCommitSeal2);
   }
 
   @Test
