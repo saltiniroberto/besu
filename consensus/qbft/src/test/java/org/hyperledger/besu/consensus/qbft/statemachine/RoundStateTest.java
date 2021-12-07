@@ -68,6 +68,7 @@ public class RoundStateTest {
   @Mock private MessageValidator messageValidator;
 
   @Mock private Block block;
+  @Mock private Block block2;
 
   @Before
   public void setup() {
@@ -78,6 +79,7 @@ public class RoundStateTest {
       validatorMessageFactories.add(new MessageFactory(newNodeKey));
     }
     when(block.getHash()).thenReturn(Hash.fromHexStringLenient("1"));
+    when(block2.getHash()).thenReturn(Hash.fromHexStringLenient("2"));
   }
 
   @Test
@@ -179,6 +181,48 @@ public class RoundStateTest {
     assertThat(roundState.isPrepared()).isTrue();
     assertThat(roundState.isCommitted()).isFalse();
     assertThat(roundState.constructPreparedCertificate()).isNotEmpty();
+  }
+
+  @Test
+  public void prepareMessagesSentByTheSameSenderAreNotCountedTwice() {
+    when(messageValidator.validateProposal(any())).thenReturn(true);
+    when(messageValidator.validatePrepare(any())).thenReturn(true);
+
+    final RoundState roundState = new RoundState(roundIdentifier, 3, messageValidator);
+
+    final Prepare firstPrepare =
+            validatorMessageFactories.get(1).createPrepare(roundIdentifier, block.getHash());
+
+    final Prepare secondPrepare =
+            validatorMessageFactories.get(2).createPrepare(roundIdentifier, block.getHash());
+
+    final Prepare secondPrepareBlockTwo =
+            validatorMessageFactories.get(2).createPrepare(roundIdentifier, block2.getHash());
+
+    roundState.addPrepareMessage(firstPrepare);
+    assertThat(roundState.isPrepared()).isFalse();
+    assertThat(roundState.isCommitted()).isFalse();
+    assertThat(roundState.constructPreparedCertificate()).isEmpty();
+
+    roundState.addPrepareMessage(secondPrepare);
+    assertThat(roundState.isPrepared()).isFalse();
+    assertThat(roundState.isCommitted()).isFalse();
+    assertThat(roundState.constructPreparedCertificate()).isEmpty();
+
+    roundState.addPrepareMessage(secondPrepareBlockTwo);
+    assertThat(roundState.isPrepared()).isFalse();
+    assertThat(roundState.isCommitted()).isFalse();
+    assertThat(roundState.constructPreparedCertificate()).isEmpty();
+
+    final Proposal proposal =
+            validatorMessageFactories
+                    .get(0)
+                    .createProposal(
+                            roundIdentifier, block, Collections.emptyList(), Collections.emptyList());
+    assertThat(roundState.setProposedBlock(proposal)).isTrue();
+    assertThat(roundState.isPrepared()).isFalse();
+    assertThat(roundState.isCommitted()).isFalse();
+    assertThat(roundState.constructPreparedCertificate()).isEmpty();
   }
 
   @Test
